@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: AAlts
+## Notes: Overview of every character: gold, level, professions, gear, lockouts and where items are
+## Version: 0.1.0
+## Category: Characters
+## IconTexture: Interface\Icons\INV_Misc_GroupLooking
+## Dependencies: ACore
+## OptionalDeps: ABag
+## SavedVariables: AAltsDB
+
+Core.lua
+Scan.lua
+Items.lua
+Window.lua

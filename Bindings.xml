@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="AALTS_TOGGLE" header="AALTS" category="ADDONS">
+		AAlts_ToggleBinding()
+	</Binding>
+</Bindings>
