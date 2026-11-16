@@ -9,10 +9,11 @@ local defaults = {
 	desc = false,
 }
 
-ACore.New(ADDON, ns, { db = "AAltsDB", defaults = defaults })
+ACore.New(ADDON, ns, { db = "AAltsDB", defaults = defaults, profile = true, shared = { "chars" } })
 
 ACore.Register({
 	name = "AAlts",
+	options = function() return ns.Options() end,
 	title = "AAlts",
 	slash = "/aalts",
 	desc = "all your characters",
