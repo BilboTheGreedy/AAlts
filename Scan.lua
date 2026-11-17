@@ -10,11 +10,13 @@ local function str(v)
 	return v
 end
 
+local function pass(ok, ...)
+	if ok then return ... end
+end
+
 local function call(fn, ...)
 	if not fn then return nil end
-	local r = { pcall(fn, ...) }
-	if not r[1] then return nil end
-	return unpack(r, 2)
+	return pass(pcall(fn, ...))
 end
 
 local function basics(c)
@@ -26,29 +28,55 @@ local function basics(c)
 	c.xp = num(call(UnitXP, "player")) or 0
 	c.xpMax = num(call(UnitXPMax, "player")) or 0
 	c.rested = num(call(GetXPExhaustion)) or 0
-	c.money = num(call(GetMoney)) or c.money or 0
+	local max = num(call(GetMaxPlayerLevel)) or 60
+	c.capped = c.level >= max
+	local money = num(call(GetMoney)) or c.money or 0
+	local day = date and date("%Y-%m-%d")
+	if day and c.day ~= day then c.day, c.dayStart = day, c.money or money end
+	c.money = money
 	local zone = call(GetRealZoneText)
 	if not str(zone) then zone = call(GetZoneText) end
 	c.zone = str(zone) or c.zone
-	local guild = call(GetGuildInfo, "player")
+	local guild, guildRank = call(GetGuildInfo, "player")
 	c.guild = str(guild)
+	c.guildRank = c.guild and str(guildRank) or nil
 	c.resting = call(IsResting) and true or false
 	c.seen = ns.Now()
 end
 
-local function professions(c)
+local function trim(v)
+	if type(v) ~= "string" then return nil end
+	return (v:gsub(":%s*$", ""))
+end
+
+local function skillLines()
 	local out = {}
-	if GetNumSkillLines and GetSkillLineInfo then
-		local header = 0
-		for i = 1, num(call(GetNumSkillLines)) or 0 do
-			local name, isHeader, _, rank, _, _, max, abandon = call(GetSkillLineInfo, i)
-			if isHeader then
-				header = header + 1
-			elseif str(name) and num(rank) and num(max) and max > 1 and (abandon or header == 2 or header == 3) then
-				out[#out + 1] = { name = name, rank = rank, max = max, main = abandon and true or false }
-			end
+	if not GetNumSkillLines or not GetSkillLineInfo then return out end
+	local lines = {}
+	local main, second = trim(rawget(_G, "TRADE_SKILLS")), trim(rawget(_G, "SECONDARY_SKILLS"))
+	local header, named, section = 0, false, false
+	for i = 1, num(call(GetNumSkillLines)) or 0 do
+		local name, isHeader, _, rank, _, _, max, abandon = call(GetSkillLineInfo, i)
+		if isHeader then
+			header = header + 1
+			local n = trim(str(name))
+			section = n ~= nil and (n == main or n == second)
+			if section then named = true end
+		elseif str(name) and num(rank) and num(max) and max > 1 then
+			lines[#lines + 1] = { name = name, rank = rank, max = max, main = abandon and true or false, section = section, header = header }
 		end
-	elseif GetProfessions and GetProfessionInfo then
+	end
+	for _, l in ipairs(lines) do
+		local keep = l.main or l.section
+		if not named and (l.header == 2 or l.header == 3) then keep = true end
+		if keep then out[#out + 1] = { name = l.name, rank = l.rank, max = l.max, main = l.main } end
+	end
+	return out
+end
+
+local function professions(c)
+	local out = skillLines()
+	if #out == 0 and GetProfessions and GetProfessionInfo then
 		local list = { call(GetProfessions) }
 		for i = 1, 6 do
 			local index = list[i]
@@ -68,15 +96,16 @@ local function professions(c)
 end
 
 local COOLDOWNS = {
-	{ spell = 18560, name = "Mooncloth" },
-	{ spell = 17187, name = "Transmute" },
-	{ spell = 19566, name = "Salt Shaker" },
+	{ name = "Transmute", spells = { 17187, 11479, 11480, 17559, 17560, 17561, 17562, 17563, 17564, 17565, 17566, 25146 } },
+	{ name = "Mooncloth", spells = { 18560 } },
+	{ name = "Salt Shaker", spells = { 19566 } },
 }
 
 local function spellCooldown(id)
 	if C_Spell and C_Spell.GetSpellCooldown then
 		local info = call(C_Spell.GetSpellCooldown, id)
 		if type(info) == "table" then return num(info.startTime), num(info.duration) end
+		return nil
 	end
 	if GetSpellCooldown then
 		local start, duration = call(GetSpellCooldown, id)
@@ -85,22 +114,37 @@ local function spellCooldown(id)
 end
 
 local function known(id)
-	if IsPlayerSpell then return call(IsPlayerSpell, id) and true or false end
-	if IsSpellKnown then return call(IsSpellKnown, id) and true or false end
+	if IsPlayerSpell and call(IsPlayerSpell, id) then return true end
+	if IsSpellKnown and call(IsSpellKnown, id) then return true end
 	return false
 end
 
 local function cooldowns(c)
+	local old = {}
+	for _, cd in ipairs(c.cooldowns or {}) do old[cd.name] = cd end
 	local out = {}
 	local now = GetTime and GetTime() or 0
 	for _, cd in ipairs(COOLDOWNS) do
-		if known(cd.spell) then
-			local start, duration = spellCooldown(cd.spell)
-			local ready = 0
-			if start and duration and duration > 60 then
+		local ready, have = nil, false
+		for _, id in ipairs(cd.spells) do
+			local start, duration = spellCooldown(id)
+			if start and duration and start > 0 and duration > 60 then
 				ready = ns.Now() + math.max(0, start + duration - now)
+				break
 			end
-			out[#out + 1] = { name = cd.name, ready = ready }
+			if not have and known(id) then have = true end
+		end
+		local prev = old[cd.name]
+		if ready then
+			if prev and math.abs((prev.ready or 0) - ready) < 10 then
+				out[#out + 1] = prev
+			else
+				out[#out + 1] = { name = cd.name, ready = ready }
+			end
+		elseif prev then
+			out[#out + 1] = prev
+		elseif have then
+			out[#out + 1] = { name = cd.name, ready = 0 }
 		end
 	end
 	c.cooldowns = out
@@ -180,9 +224,11 @@ end
 
 local function reputations(c)
 	local out = {}
+	local collapsed = false
 	if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
 		for i = 1, num(call(C_Reputation.GetNumFactions)) or 0 do
 			local d = call(C_Reputation.GetFactionDataByIndex, i)
+			if type(d) == "table" and d.isHeader and d.isCollapsed then collapsed = true end
 			if type(d) == "table" and str(d.name) and (not d.isHeader or d.isHeaderWithRep) then
 				local standing = num(d.reaction) or 4
 				local value = num(d.currentStanding) or 0
@@ -195,7 +241,8 @@ local function reputations(c)
 		end
 	elseif GetNumFactions and GetFactionInfo then
 		for i = 1, num(call(GetNumFactions)) or 0 do
-			local name, _, standing, lo, hi, value, _, _, isHeader, _, hasRep, _, _, id = call(GetFactionInfo, i)
+			local name, _, standing, lo, hi, value, _, _, isHeader, isCollapsed, hasRep, _, _, id = call(GetFactionInfo, i)
+			if isHeader and isCollapsed then collapsed = true end
 			if str(name) and (not isHeader or hasRep) and num(standing) and num(value) then
 				lo, hi = num(lo) or 0, num(hi) or 0
 				if standing ~= 4 or value ~= lo then
@@ -205,6 +252,13 @@ local function reputations(c)
 		end
 	else
 		return
+	end
+	if collapsed and c.reps then
+		local have = {}
+		for _, r in ipairs(out) do have[r.name] = true end
+		for _, r in ipairs(c.reps) do
+			if not have[r.name] then out[#out + 1] = r end
+		end
 	end
 	table.sort(out, function(a, b)
 		if a.standing ~= b.standing then return a.standing > b.standing end
@@ -243,6 +297,15 @@ local function mail(c, atBox)
 		local shown, total = call(GetInboxNumItems)
 		c.mail = num(total) or num(shown) or 0
 		c.mailSeen = ns.Now()
+		local soonest
+		if GetInboxHeaderInfo then
+			for i = 1, num(shown) or 0 do
+				local _, _, _, _, _, _, days = call(GetInboxHeaderInfo, i)
+				days = num(days)
+				if days and (not soonest or days < soonest) then soonest = days end
+			end
+		end
+		c.mailExpire = soonest and (ns.Now() + math.floor(soonest * 86400)) or nil
 	elseif HasNewMail then
 		c.newMail = call(HasNewMail) and true or false
 	end
@@ -310,10 +373,38 @@ ns:On("TIME_PLAYED_MSG", function(total, level)
 	ns:Fire("CHARS_CHANGED")
 end)
 
+function ns.Alerts()
+	local out = {}
+	local now = ns.Now()
+	for _, c in ipairs(ns.All()) do
+		if not ns.IsCurrent(c) then
+			for _, cd in ipairs(c.cooldowns or {}) do
+				if (cd.ready or 0) > 0 and cd.ready <= now and not cd.told then
+					cd.told = true
+					out[#out + 1] = cd.name .. " ready on " .. c.name
+				end
+			end
+			if c.mailExpire and (c.mail or 0) > 0 and c.mailExpire - now < 3 * 86400 and (c.mailTold or 0) < now - 86400 then
+				c.mailTold = now
+				if c.mailExpire > now then
+					out[#out + 1] = "Mail on " .. c.name .. " expires in " .. ns.Duration(c.mailExpire - now)
+				else
+					out[#out + 1] = "Mail on " .. c.name .. " may have expired"
+				end
+			end
+		end
+	end
+	return out
+end
+
 ns:Listen("LOGIN", function()
 	ns.ScanAll()
 	if RequestRaidInfo then pcall(RequestRaidInfo) end
 	ns.After(4, askPlayed)
+	ns.After(6, function()
+		if not ns.db or not ns.db.alerts then return end
+		for _, line in ipairs(ns.Alerts()) do ns.Print(line) end
+	end)
 end)
 
 ns:On("PLAYER_MONEY", function() later("basics", basics) end)

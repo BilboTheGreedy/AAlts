@@ -5,6 +5,7 @@ local defaults = {
 	window = { scale = 1 },
 	played = true,
 	tooltip = true,
+	alerts = true,
 	sort = "name",
 	desc = false,
 }
@@ -76,6 +77,18 @@ function ns.Delete(c)
 	ns:Fire("CHARS_CHANGED")
 end
 
+function ns.Rested(c)
+	local max = c.xpMax or 0
+	if max <= 0 or c.capped then return 0 end
+	local rested = c.rested or 0
+	if not ns.IsCurrent(c) and c.seen then
+		local gain = (ns.Now() - c.seen) / 28800 * 0.05 * max
+		if not c.resting then gain = gain / 4 end
+		rested = rested + math.max(0, gain)
+	end
+	return math.min(rested, max * 1.5)
+end
+
 function ns.Ago(t)
 	if not t or t <= 0 then return "never" end
 	local d = ns.Now() - t
@@ -103,6 +116,13 @@ function ns.Options()
 		{ text = "Options", title = true },
 		UI.Check(db, "tooltip", "Show which characters own an item in tooltips"),
 		UI.Check(db, "played", "Record played time at login"),
+		UI.Check(db, "alerts", "Tell me at login about ready cooldowns and expiring mail on other characters"),
+		{ text = "Save this character now", func = function() ns.ScanAll() end },
+		{ text = "Reset window position", func = function()
+			ns.db.window.pos = nil
+			ns.db.window.scale = 1
+			ns:Fire("LAYOUT_RESET")
+		end },
 	}
 end
 

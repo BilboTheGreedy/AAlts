@@ -28,7 +28,7 @@ end
 
 local function restedPercent(c)
 	if not c.xpMax or c.xpMax <= 0 then return 0 end
-	return math.floor((c.rested or 0) / c.xpMax * 100 + 0.5)
+	return math.floor(ns.Rested(c) / c.xpMax * 100 + 0.5)
 end
 
 local function value(c, key)
@@ -82,12 +82,18 @@ local function detail(c)
 	local rows = {}
 	rows[#rows + 1] = { kind = "header", text = "Character" }
 	local line = "Level " .. (c.level or "?") .. " " .. (c.race or "") .. " " .. ns.ClassName(c.class)
-	if c.guild then line = line .. "   <" .. c.guild .. ">" end
+	if c.guild then line = line .. "   <" .. c.guild .. ">" .. (c.guildRank and ("  " .. c.guildRank) or "") end
 	note(rows, line)
-	note(rows, "Gold: " .. ACore.Money(c.money or 0) .. "      Zone: " .. (c.zone or "unknown") .. "      Seen: " .. ns.Ago(c.seen))
-	if c.xpMax and c.xpMax > 0 then
-		note(rows, string.format("Experience: %s / %s (%d%%)      Rested: %d%%%s", ACore.Short(c.xp or 0), ACore.Short(c.xpMax),
-			math.floor((c.xp or 0) / c.xpMax * 100), restedPercent(c), c.resting and "  (resting)" or ""))
+	if c.note then note(rows, "Note: " .. c.note) end
+	local today = ""
+	if c.dayStart and c.day == (date and date("%Y-%m-%d")) and c.money and c.money ~= c.dayStart then
+		local diff = c.money - c.dayStart
+		today = "  (" .. (diff > 0 and "+" or "-") .. ACore.Money(math.abs(diff)) .. " today)"
+	end
+	note(rows, "Gold: " .. ACore.Money(c.money or 0) .. today .. "      Zone: " .. (c.zone or "unknown") .. "      Seen: " .. ns.Ago(c.seen))
+	if c.xpMax and c.xpMax > 0 and not c.capped then
+		note(rows, string.format("Experience: %s / %s (%d%%)      Rested: %s%d%%%s", ACore.Short(c.xp or 0), ACore.Short(c.xpMax),
+			math.floor((c.xp or 0) / c.xpMax * 100), ns.IsCurrent(c) and "" or "about ", restedPercent(c), c.resting and "  (resting)" or ""))
 	end
 	if c.played then
 		note(rows, "Played: " .. ns.Duration(c.played) .. (c.playedLevel and ("      This level: " .. ns.Duration(c.playedLevel)) or ""))
@@ -97,7 +103,12 @@ local function detail(c)
 	if c.bankTotal then space = space .. "      Bank: " .. c.bankFree .. " free of " .. c.bankTotal end
 	note(rows, space)
 	if c.mailSeen then
-		note(rows, "Mail: " .. (c.mail or 0) .. " in the box " .. ns.Ago(c.mailSeen))
+		local expire = ""
+		if c.mailExpire and (c.mail or 0) > 0 then
+			local left = c.mailExpire - ns.Now()
+			expire = left > 0 and ("      First expires in " .. ns.Duration(left)) or "      Some may have expired"
+		end
+		note(rows, "Mail: " .. (c.mail or 0) .. " in the box " .. ns.Ago(c.mailSeen) .. expire)
 	elseif c.newMail then
 		note(rows, "Mail: new mail waiting")
 	end
@@ -190,6 +201,13 @@ local function createRow(list)
 				UI.Menu(self, {
 					{ text = c.name, title = true },
 					{ text = "Open", func = function() Window.ShowChar(c) end },
+					{ text = c.note and "Change note" or "Add note", func = function()
+						UI.Prompt("Note for " .. c.name, c.note or "", function(text)
+							text = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+							c.note = text ~= "" and text or nil
+							ns:Fire("CHARS_CHANGED")
+						end)
+					end },
 					{ text = "Delete this entry", func = function()
 						UI.Confirm("Remove " .. c.name .. " from AAlts?", function() ns.Delete(c) end)
 					end },
@@ -232,7 +250,7 @@ local function updateRow(row, d)
 	if isChar then
 		local c = d.char
 		local cells = row.cells
-		cells[1]:SetText(c.name .. (ns.IsCurrent(c) and " *" or ""))
+		cells[1]:SetText(c.name .. (c.realm ~= ns.Realm() and (" - " .. c.realm) or "") .. (ns.IsCurrent(c) and " *" or ""))
 		cells[1]:SetTextColor(classColor(c.class))
 		cells[2]:SetText(c.level or "?")
 		cells[3]:SetText(ACore.Money(c.money or 0))
@@ -409,6 +427,9 @@ ns:Listen("CHARS_CHANGED", function()
 	local top = state.stack[#state.stack]
 	if top and not (ns.db.chars[top.realm] and ns.db.chars[top.realm][top.name]) then state.stack = {} end
 	Window.Refresh()
+end)
+ns:On("GET_ITEM_INFO_RECEIVED", function()
+	if frame and frame.mode == "items" and frame:IsShown() then ns.Debounce("items", 0.5, Window.Refresh) end
 end)
 ns:Listen("LAYOUT_RESET", function()
 	if frame then frame:Restore() end
